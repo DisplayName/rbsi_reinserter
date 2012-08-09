@@ -1,0 +1,12 @@
+{application, rbsi_reinserter,
+ [
+  {description, "This application parses and reinserts failed messages from RBS indexer's dump. It is compatible with Rbs_indexer dump v2.2.1 or higher."},
+  {vsn, "1.0.0"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { rbsi_reinserter_app, []}},
+  {env, []}
+ ]}.
