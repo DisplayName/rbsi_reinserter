@@ -1,4 +1,4 @@
--module(log_parser).
+-module(rbsi_reinserter).
 -behaviour(gen_server).
 
 -export([

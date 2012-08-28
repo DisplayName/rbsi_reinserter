@@ -25,6 +25,6 @@ start_link() ->
 
 init([]) ->
   {ok, { {one_for_one, 5, 10}, [
-        {log_parser, {log_parser, start_link, []}, permanent, infinity, worker, [log_parser]}
+        {rbsi_reinserter, {rbsi_reinserter, start_link, []}, permanent, infinity, worker, [rbsi_reinserter]}
 
     ]} }.
