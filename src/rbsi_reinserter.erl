@@ -3,7 +3,8 @@
 
 -export([
         start_link/0,
-        parse/1
+        parse/1,
+        parse/0
 ]).
 
 -export([
@@ -24,7 +25,9 @@
           connection,
           db,
           collection,
-          file_for_rejected_data
+          file_for_rejected_data,
+          failed_records_count,
+          reinserted_records_count
 }).
 
 
@@ -32,6 +35,8 @@
 %% ===================================================================
 %% APIs
 %% ===================================================================
+
+
 start_link() ->
    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
@@ -53,7 +58,8 @@ init([]) ->
    case mongo:connect(MongoServer) of
       {ok, Connection} ->
       {ok, #state{server = MongoServer, connection = Connection, db = MongoDb,
-           collection = MongoCollection, file_for_rejected_data = FileForRejectedData}};
+           collection = MongoCollection, file_for_rejected_data = FileForRejectedData,
+           failed_records_count = 0, reinserted_records_count = 0}};
       {error, Reason} ->
          ?log_error("Error Occured. Reason:~p. Connection settings: ~p~n", [Reason, MongoServer])
    end.
@@ -65,8 +71,8 @@ handle_cast({parse, LogFileName}, State) ->
    case file:open(LogFileName, [read]) of
       {ok, Device} ->
          init_storage_file(State#state.file_for_rejected_data),
-         parse_logfile_line_by_line(Device, "", State),
-         ?log_info("parsing ended", []),
+         NewState = parse_logfile_line_by_line(Device, "", State),
+         output_summary(NewState),
          file:close(Device),
 
          {noreply, State};
@@ -100,17 +106,24 @@ code_change(_OldSvn, State, _Extra) ->
 %% Internal
 %% ===================================================================
 
+
+output_summary(State) ->
+  ?log_info("Summary", []),
+  ?log_info("  Reinserted messages: ~p. Failed messages: ~p.", 
+      [State#state.reinserted_records_count, State#state.failed_records_count]).
+
+
 %
 % extracting messages from log file
 %
 parse_logfile_line_by_line(Device, Accum, State) ->
    case io:get_line(Device, "") of
       eof ->
-         ok;
+         State;
       Line ->
          {Term, UnhandledData} = try_to_get_term(Accum ++ Line, string:chr(Line, $.)),
-         reinsert_message(State, Term),
-         parse_logfile_line_by_line(Device, UnhandledData, State)
+         NewState = reinsert_message(State, Term),
+         parse_logfile_line_by_line(Device, UnhandledData, NewState)
    end.
 
 
@@ -128,7 +141,8 @@ try_to_get_term(Text, _Position) ->
    StringToParse = string:substr(RefinedString, 1, Position),
    {ok, Tokens, _EndLine} = erl_scan:string(StringToParse),
    {ok, Terms} = erl_parse:parse_term(Tokens),
-   {Binary, _Trash} = Terms,
+   
+   {_RecordName, _RecordData, Binary} = Terms,
 
    {binary_to_term(Binary), UnhandledData}.
 
@@ -154,15 +168,17 @@ remove_spaces_and_brakes(Text) ->
 %
 % re-insert data in MongoDB or in file (depending it was fired or not)
 %
-reinsert_message(_State, undefined) -> ok;
+reinsert_message(State, undefined) -> State;
 
-reinsert_message(_State = #state{connection = Connection, db = Db, collection = Collection},
+reinsert_message(State = #state{connection = Connection, db = Db, collection = Collection, reinserted_records_count = Cnt},
                 _Data = {task, _RecipCnt, Msisdns, TranSid, _Tag, _Error}) ->
    {ok, ok} = mongo:do(safe, master, Connection, Db, fun() ->
       lists:foreach(fun(Msisdn) ->
          ok = mongo:repsert(Collection, {'_id', Msisdn}, { '$push', { v, TranSid } })
       end, Msisdns)
-   end);
+   end),
+  State#state{reinserted_records_count = Cnt + 1}   ;
 
-reinsert_message(_State = #state{file_for_rejected_data = FileForRejectedData}, Data = {_Message, _UnpackedMessage}) ->
-   save_into_file(FileForRejectedData, Data).
+reinsert_message(State = #state{file_for_rejected_data = FileForRejectedData, failed_records_count = Cnt}, Data = {_Message, _UnpackedMessage}) ->
+  save_into_file(FileForRejectedData, Data),
+  State#state{failed_records_count = Cnt + 1}.
